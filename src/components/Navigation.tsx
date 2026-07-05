@@ -46,7 +46,7 @@ export default function Navigation() {
           <span className="logo-text">إخلاص</span>
         </div>
         <ul className="nav-list">
-          {navItems.map((item: any) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const active = pathname === item.href;
             return (
@@ -84,7 +84,7 @@ export default function Navigation() {
         <div className="mobile-menu-overlay" onClick={() => setMobileOpen(false)}>
           <nav className="mobile-menu" onClick={(e) => e.stopPropagation()}>
             <ul>
-              {navItems.map((item: any) => {
+              {navItems.map((item) => {
                 const Icon = item.icon;
                 const active = pathname === item.href;
                 return (
@@ -109,7 +109,7 @@ export default function Navigation() {
 
       {/* Mobile Bottom Bar */}
       <nav className="mobile-bottom-nav">
-        {navItems.map((item: any) => {
+        {navItems.map((item) => {
           const Icon = item.icon;
           const active = pathname === item.href;
           return (
