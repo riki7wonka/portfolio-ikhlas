@@ -59,7 +59,7 @@ export default function TestsPage() {
           <div className="tests-grid anim-fade-up anim-delay-2">
             {loading ? (
                <p style={{ textAlign: 'center', color: 'var(--text-muted)', gridColumn: '1 / -1' }}>جاري التحميل...</p>
-            ) : tests.map((test, i) => (
+            ) : tests.map((test: any, i: number) => (
               <div key={test.id} className={`glass-card test-card anim-fade-up anim-delay-${i + 1}`}>
                 <div className="test-card-top">
                   <div className="test-icon">
@@ -112,14 +112,14 @@ export default function TestsPage() {
               </span>
             </div>
 
-            {currentTest.questions.map((q, qi) => (
+            {currentTest.questions.map((q: any, qi: number) => (
               <div key={q.id} className="glass-card question-card">
                 <h3 className="question-text">
                   <span className="question-num">{qi + 1}</span>
                   {q.text}
                 </h3>
                 <div className="options-list">
-                  {q.options.map((opt, oi) => (
+                  {q.options.map((opt: string, oi: number) => (
                     <button
                       key={oi}
                       id={`q${q.id}-opt${oi}`}
@@ -182,7 +182,7 @@ export default function TestsPage() {
             </div>
 
             {/* Answer Review */}
-            {currentTest.questions.map((q, qi) => {
+            {currentTest.questions.map((q: any, qi: number) => {
               const userAnswer = answers[q.id];
               const isCorrect = userAnswer === q.correct;
               return (
@@ -195,7 +195,7 @@ export default function TestsPage() {
                       : <XCircle size={18} style={{ color: '#ef4444', marginRight: '0.5rem' }} />}
                   </h3>
                   <div className="options-list">
-                    {q.options.map((opt, oi) => (
+                    {q.options.map((opt: string, oi: number) => (
                       <div
                         key={oi}
                         className={`quiz-option ${oi === q.correct ? 'correct' : oi === userAnswer && !isCorrect ? 'wrong' : ''}`}

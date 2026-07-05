@@ -64,7 +64,7 @@ export default async function PortfolioPage() {
       {/* Works Grid */}
       <section className="container" style={{ padding: '3rem 1.5rem 6rem' }}>
         <div className="works-grid">
-          {proofreadingWorks.map((work, i) => (
+          {proofreadingWorks.map((work: any, i: number) => (
             <article
               key={work.id}
               className={`glass-card work-card anim-fade-up anim-delay-${Math.min(i + 1, 5)}`}

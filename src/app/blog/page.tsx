@@ -55,7 +55,7 @@ export default function BlogPage() {
             <p style={{ textAlign: 'center', color: 'var(--text-muted)' }}>جاري التحميل...</p>
           ) : (
             <>
-          {filtered.map((article, i) => {
+          {filtered.map((article: any, i: number) => {
             const isExpanded = expanded === article.id;
             return (
               <article

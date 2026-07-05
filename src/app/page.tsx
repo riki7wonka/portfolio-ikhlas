@@ -90,7 +90,7 @@ export default async function HomePage() {
           </div>
 
           <div className="skills-grid">
-            {skills.map((skill, i) => (
+            {skills.map((skill: any, i: number) => (
               <div
                 key={skill.title}
                 className={`glass-card skill-card anim-fade-up anim-delay-${Math.min(i + 1, 5)}`}
@@ -116,7 +116,7 @@ export default async function HomePage() {
           </div>
 
           <div className="articles-preview">
-            {articles.slice(0, 2).map((article, i) => (
+            {articles.slice(0, 2).map((article: any, i: number) => (
               <div key={article.id} className={`glass-card article-preview-card anim-fade-up anim-delay-${i + 1}`}>
                 <span className="badge">{article.category}</span>
                 <h3 className="article-preview-title">{article.title}</h3>
@@ -147,7 +147,7 @@ export default async function HomePage() {
           </div>
 
           <div className="proofreading-preview grid-2">
-            {proofreadingWorks.slice(0, 2).map((work, i) => (
+            {proofreadingWorks.slice(0, 2).map((work: any, i: number) => (
               <div key={work.id} className={`glass-card proof-card anim-fade-up anim-delay-${i + 1}`}>
                 <div className="proof-header">
                   <span className="badge">{work.type}</span>
