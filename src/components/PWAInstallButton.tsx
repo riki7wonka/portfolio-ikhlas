@@ -1,23 +1,24 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
-type DeviceType = 'android' | 'ios' | 'desktop' | 'unknown';
+// Store the prompt globally so it's never lost
+let cachedPrompt: BeforeInstallPromptEvent | null = null;
 
-function detectDevice(): DeviceType {
-  const ua = navigator.userAgent.toLowerCase();
-  if (/iphone|ipad|ipod/.test(ua)) return 'ios';
-  if (/android/.test(ua)) return 'android';
-  if (/mobile|tablet/.test(ua)) return 'unknown';
-  return 'desktop';
+// Detect iOS
+function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /iphone|ipad|ipod/i.test(navigator.userAgent);
 }
 
-function isRunningStandalone(): boolean {
+// Detect standalone mode (already installed)
+function isStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
   return (
     window.matchMedia('(display-mode: standalone)').matches ||
     ('standalone' in navigator && (navigator as { standalone?: boolean }).standalone === true)
@@ -25,471 +26,261 @@ function isRunningStandalone(): boolean {
 }
 
 export default function PWAInstallButton() {
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [device, setDevice] = useState<DeviceType>('unknown');
-  const [isInstalled, setIsInstalled] = useState(false);
-  const [showBanner, setShowBanner] = useState(false);
-  const [showIOSModal, setShowIOSModal] = useState(false);
+  const [promptReady, setPromptReady] = useState(false);
+  const [installed, setInstalled] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [debug, setDebug] = useState('');
+  const promptRef = useRef<BeforeInstallPromptEvent | null>(null);
+  const ios = typeof window !== 'undefined' ? isIOS() : false;
 
   useEffect(() => {
     // Register service worker
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(console.error);
+      navigator.serviceWorker
+        .register('/sw.js', { scope: '/' })
+        .then(() => setDebug(d => d + ' | SW:OK'))
+        .catch(() => setDebug(d => d + ' | SW:FAIL'));
     }
 
-    // Already installed as PWA?
-    if (isRunningStandalone()) {
-      setIsInstalled(true);
+    // Already installed?
+    if (isStandalone()) {
+      setInstalled(true);
+      setDebug('standalone');
       return;
     }
 
-    // Was banner dismissed this session?
-    if (sessionStorage.getItem('pwa-dismissed') === '1') {
-      setDismissed(true);
+    setDebug('UA:' + navigator.userAgent.slice(0, 40));
+
+    // iOS: always show banner (no install API available on iOS)
+    if (ios) {
+      setTimeout(() => setVisible(true), 800);
       return;
     }
 
-    const type = detectDevice();
-    setDevice(type);
-
-    // Always show banner on mobile after short delay
-    if (type === 'ios' || type === 'android' || type === 'unknown') {
-      setTimeout(() => setShowBanner(true), 1500);
-    }
-
-    // Capture Android install prompt
-    const handleBeforeInstallPrompt = (e: Event) => {
+    // Android / Desktop: wait for beforeinstallprompt
+    const capture = (e: Event) => {
       e.preventDefault();
-      setInstallPrompt(e as BeforeInstallPromptEvent);
+      const promptEvent = e as BeforeInstallPromptEvent;
+      cachedPrompt = promptEvent;
+      promptRef.current = promptEvent;
+      setPromptReady(true);
+      setVisible(true);
+      setDebug(d => d + ' | PROMPT:READY');
     };
 
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setShowBanner(false);
-    };
+    // If prompt was already captured globally before this mount
+    if (cachedPrompt) {
+      promptRef.current = cachedPrompt;
+      setPromptReady(true);
+      setVisible(true);
+      setDebug(d => d + ' | PROMPT:CACHED');
+    }
 
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
+    window.addEventListener('beforeinstallprompt', capture);
+    window.addEventListener('appinstalled', () => {
+      setInstalled(true);
+      setVisible(false);
+      cachedPrompt = null;
+    });
+
+    // Show after 3s even if prompt hasn't fired — to show iOS-style guide as fallback
+    const fallbackTimer = setTimeout(() => {
+      if (!promptRef.current) {
+        setVisible(true);
+        setDebug(d => d + ' | FALLBACK');
+      }
+    }, 3000);
 
     return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
+      window.removeEventListener('beforeinstallprompt', capture);
+      clearTimeout(fallbackTimer);
     };
-  }, []);
+  }, [ios]);
 
-  const handleInstallClick = async () => {
-    if (device === 'ios') {
-      setShowIOSModal(true);
+  const handleInstall = async () => {
+    const prompt = promptRef.current || cachedPrompt;
+
+    if (!prompt) {
+      // No native prompt — show browser guide
+      alert(
+        ios
+          ? 'على iPhone:\n١. اضغط زر المشاركة □↑\n٢. اختر "Add to Home Screen"\n٣. اضغط Add'
+          : 'على Chrome Android:\n١. اضغط النقاط الثلاث ⋮\n٢. اختر "Add to Home screen"\n٣. اضغط Add\n\n⚠️ تأكد من استخدام Chrome'
+      );
       return;
     }
 
-    if (installPrompt) {
-      // Android with native prompt available
-      setIsInstalling(true);
-      try {
-        await installPrompt.prompt();
-        const { outcome } = await installPrompt.userChoice;
-        if (outcome === 'accepted') {
-          setIsInstalled(true);
-          setShowBanner(false);
-        }
-      } finally {
-        setIsInstalling(false);
-        setInstallPrompt(null);
+    setIsInstalling(true);
+    try {
+      await prompt.prompt();
+      const { outcome } = await prompt.userChoice;
+      if (outcome === 'accepted') {
+        setInstalled(true);
+        setVisible(false);
+        cachedPrompt = null;
+        promptRef.current = null;
       }
-    } else {
-      // Android but no prompt yet — show manual guide
-      setShowIOSModal(true);
+    } catch (err) {
+      console.error('Install failed:', err);
+    } finally {
+      setIsInstalling(false);
     }
   };
 
-  const handleDismiss = () => {
-    sessionStorage.setItem('pwa-dismissed', '1');
-    setDismissed(true);
-    setShowBanner(false);
-  };
-
-  if (isInstalled || dismissed) return null;
-  if (!showBanner) return null;
-
-  const isAndroidNative = device === 'android' && !!installPrompt;
+  if (installed || !visible) return null;
 
   return (
     <>
       <style>{`
-        /* ===== BANNER ===== */
-        .pwa-banner {
+        .pwa-wrap {
           position: fixed;
-          bottom: 0;
-          left: 0;
-          right: 0;
+          bottom: 0; left: 0; right: 0;
           z-index: 99999;
-          background: linear-gradient(135deg, rgba(17,5,40,0.97) 0%, rgba(30,10,60,0.97) 100%);
-          backdrop-filter: blur(20px);
-          -webkit-backdrop-filter: blur(20px);
-          border-top: 1px solid rgba(108,99,255,0.4);
-          padding: 16px 20px;
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          box-shadow: 0 -8px 40px rgba(108,99,255,0.25);
-          animation: pwa-banner-up 0.45s cubic-bezier(0.34,1.4,0.64,1) both;
-          font-family: var(--font-cairo), 'Cairo', sans-serif;
-        }
-
-        .pwa-banner-icon {
-          width: 52px;
-          height: 52px;
-          border-radius: 14px;
-          background: linear-gradient(135deg, #6c63ff, #a855f7);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 26px;
-          flex-shrink: 0;
-          box-shadow: 0 4px 16px rgba(108,99,255,0.5);
-        }
-
-        .pwa-banner-text {
-          flex: 1;
-          color: #fff;
-          min-width: 0;
-        }
-
-        .pwa-banner-title {
-          font-size: 15px;
-          font-weight: 700;
-          margin: 0 0 2px;
-          white-space: nowrap;
-        }
-
-        .pwa-banner-subtitle {
-          font-size: 12px;
-          color: rgba(200,185,255,0.8);
-          margin: 0;
-        }
-
-        .pwa-banner-actions {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          flex-shrink: 0;
-        }
-
-        .pwa-install-btn {
-          padding: 10px 20px;
-          background: linear-gradient(135deg, #6c63ff 0%, #a855f7 100%);
-          color: #fff;
-          border: none;
-          border-radius: 50px;
-          font-family: var(--font-cairo), 'Cairo', sans-serif;
-          font-size: 14px;
-          font-weight: 700;
-          cursor: pointer;
-          white-space: nowrap;
-          box-shadow: 0 4px 16px rgba(108,99,255,0.4);
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          transition: transform 0.15s, box-shadow 0.15s;
-        }
-
-        .pwa-install-btn:active {
-          transform: scale(0.96);
-        }
-
-        .pwa-install-btn:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-
-        .pwa-dismiss-btn {
-          width: 32px;
-          height: 32px;
-          background: rgba(255,255,255,0.08);
-          border: 1px solid rgba(255,255,255,0.12);
-          border-radius: 50%;
-          color: rgba(255,255,255,0.5);
-          font-size: 16px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          transition: background 0.15s;
-        }
-
-        .pwa-dismiss-btn:active {
-          background: rgba(255,255,255,0.15);
-        }
-
-        .pwa-spinner {
-          width: 14px;
-          height: 14px;
-          border: 2px solid rgba(255,255,255,0.3);
-          border-top-color: white;
-          border-radius: 50%;
-          animation: pwa-spin 0.8s linear infinite;
-        }
-
-        /* ===== iOS MODAL ===== */
-        .pwa-modal-overlay {
-          position: fixed;
-          inset: 0;
-          z-index: 999999;
-          background: rgba(0,0,0,0.75);
-          backdrop-filter: blur(8px);
-          -webkit-backdrop-filter: blur(8px);
-          display: flex;
-          align-items: flex-end;
-          justify-content: center;
-          animation: pwa-fade-in 0.25s ease both;
-          font-family: var(--font-cairo), 'Cairo', sans-serif;
-        }
-
-        .pwa-modal {
-          background: linear-gradient(160deg, #1a0a35 0%, #110520 100%);
-          border: 1px solid rgba(108,99,255,0.3);
-          border-radius: 24px 24px 0 0;
-          padding: 28px 24px 40px;
-          width: 100%;
-          max-width: 480px;
-          animation: pwa-modal-up 0.4s cubic-bezier(0.34,1.4,0.64,1) both;
-          color: #fff;
-          text-align: right;
-        }
-
-        .pwa-modal-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 24px;
-        }
-
-        .pwa-modal-title {
-          font-size: 20px;
-          font-weight: 800;
-          background: linear-gradient(135deg, #a78bfa, #ec4899);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-          background-clip: text;
-        }
-
-        .pwa-modal-close {
-          width: 34px;
-          height: 34px;
-          background: rgba(255,255,255,0.08);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 50%;
-          color: #fff;
-          font-size: 18px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .pwa-step {
-          display: flex;
-          align-items: flex-start;
-          gap: 14px;
-          margin-bottom: 20px;
+          font-family: var(--font-cairo), 'Cairo', Arial, sans-serif;
           direction: rtl;
         }
 
-        .pwa-step-num {
-          width: 34px;
-          height: 34px;
-          border-radius: 50%;
-          background: linear-gradient(135deg, #6c63ff, #a855f7);
-          color: #fff;
-          font-size: 15px;
-          font-weight: 700;
+        .pwa-bar {
+          background: linear-gradient(135deg, #12052a 0%, #1e0840 100%);
+          border-top: 1.5px solid rgba(108,99,255,0.5);
+          box-shadow: 0 -6px 32px rgba(108,99,255,0.3);
+          padding: 14px 18px;
           display: flex;
           align-items: center;
-          justify-content: center;
+          gap: 14px;
+          animation: pwa-up 0.4s cubic-bezier(0.34,1.4,0.64,1) both;
+        }
+
+        .pwa-app-icon {
+          width: 50px; height: 50px;
+          border-radius: 12px;
+          background: linear-gradient(135deg,#6c63ff,#a855f7);
+          display: flex; align-items: center; justify-content: center;
+          font-size: 24px;
           flex-shrink: 0;
-          box-shadow: 0 4px 12px rgba(108,99,255,0.4);
+          box-shadow: 0 4px 14px rgba(108,99,255,0.5);
         }
 
-        .pwa-step-content {
-          flex: 1;
-          padding-top: 6px;
+        .pwa-info { flex: 1; min-width: 0; }
+
+        .pwa-title {
+          color: #fff;
+          font-size: 15px;
+          font-weight: 800;
+          margin: 0 0 3px;
         }
 
-        .pwa-step-title {
+        .pwa-sub {
+          color: rgba(200,185,255,0.75);
+          font-size: 12px;
+          margin: 0;
+        }
+
+        .pwa-btn {
+          padding: 11px 22px;
+          background: linear-gradient(135deg,#6c63ff,#a855f7);
+          color: #fff;
+          border: none;
+          border-radius: 50px;
+          font-family: inherit;
           font-size: 14px;
           font-weight: 700;
-          color: #e2d9ff;
-          margin: 0 0 4px;
+          cursor: pointer;
+          white-space: nowrap;
+          box-shadow: 0 4px 18px rgba(108,99,255,0.5);
+          transition: transform 0.15s, opacity 0.15s;
+          display: flex; align-items: center; gap: 6px;
+          flex-shrink: 0;
         }
 
-        .pwa-step-desc {
-          font-size: 13px;
-          color: rgba(180,165,220,0.8);
-          margin: 0;
-          line-height: 1.5;
+        .pwa-btn:active  { transform: scale(0.95); opacity: 0.85; }
+        .pwa-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+        .pwa-close {
+          width: 28px; height: 28px;
+          background: rgba(255,255,255,0.07);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 50%;
+          color: rgba(255,255,255,0.45);
+          font-size: 15px;
+          cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          flex-shrink: 0;
+          transition: background 0.15s;
+        }
+        .pwa-close:active { background: rgba(255,255,255,0.15); }
+
+        .pwa-spin {
+          width: 14px; height: 14px;
+          border: 2px solid rgba(255,255,255,0.3);
+          border-top-color: #fff;
+          border-radius: 50%;
+          animation: spin 0.7s linear infinite;
         }
 
-        .pwa-step-icon {
-          font-size: 22px;
-        }
-
-        .pwa-modal-note {
-          margin-top: 20px;
-          padding: 12px 16px;
+        .pwa-ios-hint {
           background: rgba(108,99,255,0.1);
-          border: 1px solid rgba(108,99,255,0.2);
-          border-radius: 12px;
+          border-top: 1px solid rgba(108,99,255,0.2);
+          padding: 10px 18px;
           font-size: 12px;
-          color: rgba(180,165,220,0.9);
-          line-height: 1.6;
+          color: rgba(190,175,255,0.85);
+          text-align: center;
         }
 
-        /* ===== ANIMATIONS ===== */
-        @keyframes pwa-banner-up {
+        .pwa-ios-hint strong { color: #c4b5fd; }
+
+        @keyframes pwa-up {
           from { transform: translateY(100%); opacity: 0; }
           to   { transform: translateY(0);    opacity: 1; }
         }
-
-        @keyframes pwa-fade-in {
-          from { opacity: 0; }
-          to   { opacity: 1; }
-        }
-
-        @keyframes pwa-modal-up {
-          from { transform: translateY(60px); opacity: 0; }
-          to   { transform: translateY(0);    opacity: 1; }
-        }
-
-        @keyframes pwa-spin {
-          to { transform: rotate(360deg); }
-        }
-
-        @media (min-width: 768px) {
-          .pwa-banner { display: none; }
-        }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
 
-      {/* ===== BOTTOM BANNER ===== */}
-      <div className="pwa-banner" role="banner">
-        <div className="pwa-banner-icon">📲</div>
-        <div className="pwa-banner-text">
-          <p className="pwa-banner-title">ثبّت تطبيق إخلاص</p>
-          <p className="pwa-banner-subtitle">
-            {device === 'ios' ? 'أضفه إلى الشاشة الرئيسية' : 'تثبيت مجاني على هاتفك'}
-          </p>
-        </div>
-        <div className="pwa-banner-actions">
+      <div className="pwa-wrap">
+        <div className="pwa-bar">
+          <div className="pwa-app-icon">📚</div>
+
+          <div className="pwa-info">
+            <p className="pwa-title">تطبيق إخلاص</p>
+            <p className="pwa-sub">
+              {promptReady
+                ? '✅ جاهز للتثبيت الآن!'
+                : ios
+                  ? 'أضفه إلى الشاشة الرئيسية'
+                  : '⚠️ افتح بـ Chrome للتثبيت المباشر'}
+            </p>
+          </div>
+
           <button
-            className="pwa-install-btn"
-            onClick={handleInstallClick}
+            className="pwa-btn"
+            onClick={handleInstall}
             disabled={isInstalling}
-            aria-label="تثبيت التطبيق"
           >
-            {isInstalling ? (
-              <div className="pwa-spinner" />
-            ) : (
-              <>
-                {device === 'ios' ? '📖 كيف؟' : '⬇️ تثبيت'}
-              </>
-            )}
+            {isInstalling
+              ? <div className="pwa-spin" />
+              : promptReady
+                ? '⬇️ ثبّت'
+                : ios
+                  ? '📖 كيف؟'
+                  : '⬇️ ثبّت'}
           </button>
+
           <button
-            className="pwa-dismiss-btn"
-            onClick={handleDismiss}
+            className="pwa-close"
+            onClick={() => setVisible(false)}
             aria-label="إغلاق"
           >
             ✕
           </button>
         </div>
-      </div>
 
-      {/* ===== iOS / MANUAL GUIDE MODAL ===== */}
-      {showIOSModal && (
-        <div
-          className="pwa-modal-overlay"
-          onClick={(e) => { if (e.target === e.currentTarget) setShowIOSModal(false); }}
-          role="dialog"
-          aria-modal="true"
-          aria-label="دليل التثبيت"
-        >
-          <div className="pwa-modal">
-            <div className="pwa-modal-header">
-              <div className="pwa-modal-title">كيف تثبّت التطبيق؟</div>
-              <button
-                className="pwa-modal-close"
-                onClick={() => setShowIOSModal(false)}
-                aria-label="إغلاق"
-              >
-                ✕
-              </button>
-            </div>
-
-            {device === 'ios' ? (
-              <>
-                <div className="pwa-step">
-                  <div className="pwa-step-num">١</div>
-                  <div className="pwa-step-content">
-                    <p className="pwa-step-title">اضغط على زر المشاركة</p>
-                    <p className="pwa-step-desc">
-                      اضغط على أيقونة <span className="pwa-step-icon">□↑</span> في أسفل Safari
-                    </p>
-                  </div>
-                </div>
-                <div className="pwa-step">
-                  <div className="pwa-step-num">٢</div>
-                  <div className="pwa-step-content">
-                    <p className="pwa-step-title">اختر "إضافة إلى الشاشة الرئيسية"</p>
-                    <p className="pwa-step-desc">
-                      مرر للأسفل في قائمة المشاركة واضغط على <strong>"Add to Home Screen"</strong>
-                    </p>
-                  </div>
-                </div>
-                <div className="pwa-step">
-                  <div className="pwa-step-num">٣</div>
-                  <div className="pwa-step-content">
-                    <p className="pwa-step-title">اضغط "إضافة"</p>
-                    <p className="pwa-step-desc">
-                      سيظهر التطبيق على شاشتك الرئيسية فوراً <span className="pwa-step-icon">🎉</span>
-                    </p>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="pwa-step">
-                  <div className="pwa-step-num">١</div>
-                  <div className="pwa-step-content">
-                    <p className="pwa-step-title">اضغط على قائمة المتصفح</p>
-                    <p className="pwa-step-desc">اضغط على النقاط الثلاث <strong>⋮</strong> في أعلى يمين Chrome</p>
-                  </div>
-                </div>
-                <div className="pwa-step">
-                  <div className="pwa-step-num">٢</div>
-                  <div className="pwa-step-content">
-                    <p className="pwa-step-title">اختر "إضافة إلى الشاشة الرئيسية"</p>
-                    <p className="pwa-step-desc">ابحث عن خيار <strong>"Add to Home screen"</strong> أو <strong>"Install app"</strong></p>
-                  </div>
-                </div>
-                <div className="pwa-step">
-                  <div className="pwa-step-num">٣</div>
-                  <div className="pwa-step-content">
-                    <p className="pwa-step-title">اضغط "تثبيت"</p>
-                    <p className="pwa-step-desc">سيظهر التطبيق على شاشتك الرئيسية <span className="pwa-step-icon">🎉</span></p>
-                  </div>
-                </div>
-              </>
-            )}
-
-            <div className="pwa-modal-note">
-              💡 التثبيت مجاني تماماً ولا يحتاج App Store أو Google Play — يعمل مباشرة من المتصفح
-            </div>
+        {ios && (
+          <div className="pwa-ios-hint">
+            اضغط <strong>□↑ مشاركة</strong> ثم اختر <strong>"Add to Home Screen"</strong>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
   );
 }
