@@ -9,6 +9,9 @@ interface BeforeInstallPromptEvent extends Event {
 
 let cachedPrompt: BeforeInstallPromptEvent | null = null;
 
+// Modal state (outside component to survive re-renders)
+let showModalGlobal = false;
+
 function getDeviceInfo() {
   if (typeof navigator === 'undefined') return { os: 'unknown', browser: 'unknown' };
   const ua = navigator.userAgent;
@@ -33,6 +36,7 @@ export default function PWAInstallButton() {
   const [installed, setInstalled] = useState(false);
   const [promptReady, setPromptReady] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
   const [info, setInfo] = useState({ os: 'unknown', browser: 'unknown' });
   const promptRef = useRef<BeforeInstallPromptEvent | null>(null);
 
@@ -78,7 +82,13 @@ export default function PWAInstallButton() {
 
   const handleInstall = async () => {
     const prompt = promptRef.current || cachedPrompt;
-    if (!prompt) return;
+
+    // If Chrome hasn't fired beforeinstallprompt yet → show manual guide
+    if (!prompt) {
+      setShowGuide(true);
+      return;
+    }
+
     setIsInstalling(true);
     try {
       await prompt.prompt();
@@ -158,8 +168,66 @@ export default function PWAInstallButton() {
           border-top-color:#fff; border-radius:50%;
           animation: spin .7s linear infinite;
         }
+        /* Guide modal */
+        .pwa-guide-overlay {
+          position:fixed; inset:0; z-index:999999;
+          background:rgba(0,0,0,.8); backdrop-filter:blur(6px);
+          display:flex; align-items:flex-end; justify-content:center;
+          animation: pwa-fade .25s ease both;
+          font-family: var(--font-cairo),'Cairo',Arial,sans-serif;
+          direction:rtl;
+        }
+        .pwa-guide-modal {
+          background: linear-gradient(160deg,#130428 0%,#0d0220 100%);
+          border: 1.5px solid rgba(108,99,255,.4);
+          border-radius: 24px 24px 0 0;
+          padding: 28px 22px 44px;
+          width: 100%; max-width: 500px;
+          animation: pwa-modal-up .4s cubic-bezier(.34,1.4,.64,1) both;
+          color: #fff;
+        }
+        .pwa-guide-header {
+          display:flex; align-items:center; justify-content:space-between;
+          margin-bottom: 22px;
+        }
+        .pwa-guide-title {
+          font-size:17px; font-weight:800;
+          background: linear-gradient(135deg,#a78bfa,#ec4899);
+          -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+          background-clip:text;
+        }
+        .pwa-guide-close {
+          width:32px; height:32px; border-radius:50%;
+          background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.1);
+          color:#fff; font-size:16px; cursor:pointer;
+          display:flex; align-items:center; justify-content:center;
+        }
+        .pwa-step {
+          display:flex; align-items:flex-start; gap:14px;
+          margin-bottom:18px; direction:rtl;
+        }
+        .pwa-step-n {
+          width:32px; height:32px; border-radius:50%;
+          background:linear-gradient(135deg,#6c63ff,#a855f7);
+          color:#fff; font-size:14px; font-weight:700;
+          display:flex; align-items:center; justify-content:center;
+          flex-shrink:0;
+        }
+        .pwa-step-body { flex:1; padding-top:5px; }
+        .pwa-step-body b { font-size:14px; font-weight:700; color:#e2d9ff; display:block; margin-bottom:2px; }
+        .pwa-step-body span { font-size:12px; color:rgba(180,165,220,.8); line-height:1.5; }
+        .pwa-guide-note {
+          margin-top:18px; padding:12px 14px;
+          background:rgba(108,99,255,.1); border:1px solid rgba(108,99,255,.2);
+          border-radius:12px; font-size:12px; color:rgba(190,175,255,.9); line-height:1.6;
+        }
         @keyframes pwa-up {
           from { transform:translateY(100%); opacity:0; }
+          to   { transform:translateY(0);    opacity:1; }
+        }
+        @keyframes pwa-fade { from{opacity:0} to{opacity:1} }
+        @keyframes pwa-modal-up {
+          from { transform:translateY(60px); opacity:0; }
           to   { transform:translateY(0);    opacity:1; }
         }
         @keyframes spin { to { transform:rotate(360deg); } }
@@ -172,10 +240,9 @@ export default function PWAInstallButton() {
           <div className="pwa-text">
             <p className="pwa-title">تطبيق إخلاص</p>
             <p className="pwa-sub">
-              {canInstallDirect && promptReady && 'جاهز للتثبيت — اضغط الزر الآن!'}
-              {canInstallDirect && !promptReady && 'انتظر لحظة...'}
+              {canInstallDirect && 'اضغط ثبّت لإضافته للشاشة الرئيسية'}
               {isOtherAndroid && 'سيفتح في Chrome للتثبيت المباشر'}
-              {isIOS && 'أضفه لشاشتك الرئيسية عبر Safari'}
+              {isIOS && 'اتبع الخطوات أدناه لإضافته'}
             </p>
           </div>
 
@@ -185,7 +252,7 @@ export default function PWAInstallButton() {
               <button
                 className="pwa-btn"
                 onClick={handleInstall}
-                disabled={isInstalling || !promptReady}
+                disabled={isInstalling}
               >
                 {isInstalling
                   ? <div className="pwa-spin" />
@@ -233,6 +300,49 @@ export default function PWAInstallButton() {
           </div>
         )}
       </div>
+
+      {/* Chrome manual guide modal */}
+      {showGuide && (
+        <div
+          className="pwa-guide-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowGuide(false); }}
+        >
+          <div className="pwa-guide-modal">
+            <div className="pwa-guide-header">
+              <span className="pwa-guide-title">كيف تثبّت التطبيق على Chrome؟</span>
+              <button className="pwa-guide-close" onClick={() => setShowGuide(false)}>✕</button>
+            </div>
+
+            <div className="pwa-step">
+              <div className="pwa-step-n">١</div>
+              <div className="pwa-step-body">
+                <b>اضغط النقاط الثلاث ⋮</b>
+                <span>في أعلى يمين متصفح Chrome</span>
+              </div>
+            </div>
+
+            <div className="pwa-step">
+              <div className="pwa-step-n">٢</div>
+              <div className="pwa-step-body">
+                <b>اختر &quot;إضافة إلى الشاشة الرئيسية&quot;</b>
+                <span>أو &quot;Add to Home screen&quot; أو &quot;Install app&quot;</span>
+              </div>
+            </div>
+
+            <div className="pwa-step">
+              <div className="pwa-step-n">٣</div>
+              <div className="pwa-step-body">
+                <b>اضغط &quot;إضافة&quot; أو &quot;Install&quot;</b>
+                <span>وسيظهر التطبيق فوراً على شاشتك الرئيسية 🎉</span>
+              </div>
+            </div>
+
+            <div className="pwa-guide-note">
+              💡 إذا لم تجد الخيار، انتظر ثوانٍ وأعد تحميل الصفحة — Chrome يُظهر زر التثبيت تلقائياً
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
