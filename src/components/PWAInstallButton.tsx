@@ -7,277 +7,229 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
-// Store the prompt globally so it's never lost
 let cachedPrompt: BeforeInstallPromptEvent | null = null;
 
-// Detect iOS
-function isIOS(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  return /iphone|ipad|ipod/i.test(navigator.userAgent);
+function getDeviceInfo() {
+  if (typeof navigator === 'undefined') return { os: 'unknown', browser: 'unknown' };
+  const ua = navigator.userAgent;
+  const isIOS = /iphone|ipad|ipod/i.test(ua);
+  const isAndroid = /android/i.test(ua);
+  const isChrome = /chrome|crios/i.test(ua) && !/edg/i.test(ua);
+  const isSamsung = /samsungbrowser/i.test(ua);
+  const isSafari = /safari/i.test(ua) && !/chrome/i.test(ua);
+  const os = isIOS ? 'ios' : isAndroid ? 'android' : 'desktop';
+  const browser = isChrome ? 'chrome' : isSamsung ? 'samsung' : isSafari ? 'safari' : 'other';
+  return { os, browser };
 }
 
-// Detect standalone mode (already installed)
-function isStandalone(): boolean {
+function isStandalone() {
   if (typeof window === 'undefined') return false;
-  return (
-    window.matchMedia('(display-mode: standalone)').matches ||
-    ('standalone' in navigator && (navigator as { standalone?: boolean }).standalone === true)
-  );
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    ('standalone' in navigator && (navigator as { standalone?: boolean }).standalone === true);
 }
 
 export default function PWAInstallButton() {
-  const [promptReady, setPromptReady] = useState(false);
-  const [installed, setInstalled] = useState(false);
-  const [isInstalling, setIsInstalling] = useState(false);
   const [visible, setVisible] = useState(false);
-  const [debug, setDebug] = useState('');
+  const [installed, setInstalled] = useState(false);
+  const [promptReady, setPromptReady] = useState(false);
+  const [isInstalling, setIsInstalling] = useState(false);
+  const [info, setInfo] = useState({ os: 'unknown', browser: 'unknown' });
   const promptRef = useRef<BeforeInstallPromptEvent | null>(null);
-  const ios = typeof window !== 'undefined' ? isIOS() : false;
+
+  // Current page URL for Chrome deep-link
+  const siteUrl = typeof window !== 'undefined' ? window.location.href : '';
+  const chromeUrl = `googlechrome://navigate?url=${encodeURIComponent(siteUrl)}`;
 
   useEffect(() => {
+    if (isStandalone()) { setInstalled(true); return; }
+
+    const device = getDeviceInfo();
+    setInfo(device);
+
+    if (device.os === 'desktop') return; // Hide on desktop
+
     // Register service worker
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker
-        .register('/sw.js', { scope: '/' })
-        .then(() => setDebug(d => d + ' | SW:OK'))
-        .catch(() => setDebug(d => d + ' | SW:FAIL'));
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
 
-    // Already installed?
-    if (isStandalone()) {
-      setInstalled(true);
-      setDebug('standalone');
-      return;
-    }
-
-    setDebug('UA:' + navigator.userAgent.slice(0, 40));
-
-    // iOS: always show banner (no install API available on iOS)
-    if (ios) {
-      setTimeout(() => setVisible(true), 800);
-      return;
-    }
-
-    // Android / Desktop: wait for beforeinstallprompt
+    // Capture install prompt (Chrome / Samsung Browser)
     const capture = (e: Event) => {
       e.preventDefault();
-      const promptEvent = e as BeforeInstallPromptEvent;
-      cachedPrompt = promptEvent;
-      promptRef.current = promptEvent;
+      const pe = e as BeforeInstallPromptEvent;
+      cachedPrompt = pe;
+      promptRef.current = pe;
       setPromptReady(true);
-      setVisible(true);
-      setDebug(d => d + ' | PROMPT:READY');
     };
 
-    // If prompt was already captured globally before this mount
     if (cachedPrompt) {
       promptRef.current = cachedPrompt;
       setPromptReady(true);
-      setVisible(true);
-      setDebug(d => d + ' | PROMPT:CACHED');
     }
 
     window.addEventListener('beforeinstallprompt', capture);
-    window.addEventListener('appinstalled', () => {
-      setInstalled(true);
-      setVisible(false);
-      cachedPrompt = null;
-    });
+    window.addEventListener('appinstalled', () => { setInstalled(true); setVisible(false); });
 
-    // Show after 3s even if prompt hasn't fired — to show iOS-style guide as fallback
-    const fallbackTimer = setTimeout(() => {
-      if (!promptRef.current) {
-        setVisible(true);
-        setDebug(d => d + ' | FALLBACK');
-      }
-    }, 3000);
+    // Show banner after 1s on any mobile
+    setTimeout(() => setVisible(true), 1000);
 
-    return () => {
-      window.removeEventListener('beforeinstallprompt', capture);
-      clearTimeout(fallbackTimer);
-    };
-  }, [ios]);
+    return () => window.removeEventListener('beforeinstallprompt', capture);
+  }, []);
 
   const handleInstall = async () => {
     const prompt = promptRef.current || cachedPrompt;
-
-    if (!prompt) {
-      // No native prompt — show browser guide
-      alert(
-        ios
-          ? 'على iPhone:\n١. اضغط زر المشاركة □↑\n٢. اختر "Add to Home Screen"\n٣. اضغط Add'
-          : 'على Chrome Android:\n١. اضغط النقاط الثلاث ⋮\n٢. اختر "Add to Home screen"\n٣. اضغط Add\n\n⚠️ تأكد من استخدام Chrome'
-      );
-      return;
-    }
-
+    if (!prompt) return;
     setIsInstalling(true);
     try {
       await prompt.prompt();
       const { outcome } = await prompt.userChoice;
-      if (outcome === 'accepted') {
-        setInstalled(true);
-        setVisible(false);
-        cachedPrompt = null;
-        promptRef.current = null;
-      }
-    } catch (err) {
-      console.error('Install failed:', err);
-    } finally {
-      setIsInstalling(false);
-    }
+      if (outcome === 'accepted') { setInstalled(true); setVisible(false); cachedPrompt = null; }
+    } finally { setIsInstalling(false); }
   };
 
   if (installed || !visible) return null;
+
+  const { os, browser } = info;
+  const canInstallDirect = (browser === 'chrome' || browser === 'samsung') && os === 'android';
+  const isIOS = os === 'ios';
+  const isOtherAndroid = os === 'android' && !canInstallDirect;
 
   return (
     <>
       <style>{`
         .pwa-wrap {
-          position: fixed;
-          bottom: 0; left: 0; right: 0;
+          position: fixed; bottom: 0; left: 0; right: 0;
           z-index: 99999;
-          font-family: var(--font-cairo), 'Cairo', Arial, sans-serif;
+          font-family: var(--font-cairo),'Cairo',Arial,sans-serif;
           direction: rtl;
         }
-
         .pwa-bar {
-          background: linear-gradient(135deg, #12052a 0%, #1e0840 100%);
-          border-top: 1.5px solid rgba(108,99,255,0.5);
-          box-shadow: 0 -6px 32px rgba(108,99,255,0.3);
-          padding: 14px 18px;
-          display: flex;
-          align-items: center;
-          gap: 14px;
-          animation: pwa-up 0.4s cubic-bezier(0.34,1.4,0.64,1) both;
+          background: linear-gradient(160deg,#0d0420 0%,#1a0535 100%);
+          border-top: 1.5px solid rgba(108,99,255,.45);
+          box-shadow: 0 -8px 40px rgba(108,99,255,.3);
+          padding: 14px 16px;
+          display: flex; align-items: center; gap: 12px;
+          animation: pwa-up .4s cubic-bezier(.34,1.4,.64,1) both;
         }
-
-        .pwa-app-icon {
-          width: 50px; height: 50px;
-          border-radius: 12px;
+        .pwa-ico {
+          width: 48px; height: 48px; border-radius: 12px;
           background: linear-gradient(135deg,#6c63ff,#a855f7);
           display: flex; align-items: center; justify-content: center;
-          font-size: 24px;
-          flex-shrink: 0;
-          box-shadow: 0 4px 14px rgba(108,99,255,0.5);
+          font-size: 22px; flex-shrink: 0;
+          box-shadow: 0 4px 14px rgba(108,99,255,.5);
         }
-
-        .pwa-info { flex: 1; min-width: 0; }
-
-        .pwa-title {
-          color: #fff;
-          font-size: 15px;
-          font-weight: 800;
-          margin: 0 0 3px;
-        }
-
-        .pwa-sub {
-          color: rgba(200,185,255,0.75);
-          font-size: 12px;
-          margin: 0;
-        }
-
+        .pwa-text { flex: 1; min-width: 0; }
+        .pwa-title { color:#fff; font-size:14px; font-weight:800; margin:0 0 3px; }
+        .pwa-sub { color:rgba(200,185,255,.75); font-size:11px; margin:0; line-height:1.4; }
+        .pwa-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
         .pwa-btn {
-          padding: 11px 22px;
+          padding: 10px 18px;
           background: linear-gradient(135deg,#6c63ff,#a855f7);
-          color: #fff;
-          border: none;
-          border-radius: 50px;
-          font-family: inherit;
-          font-size: 14px;
-          font-weight: 700;
-          cursor: pointer;
-          white-space: nowrap;
-          box-shadow: 0 4px 18px rgba(108,99,255,0.5);
-          transition: transform 0.15s, opacity 0.15s;
-          display: flex; align-items: center; gap: 6px;
-          flex-shrink: 0;
+          color: #fff; border: none; border-radius: 50px;
+          font-family: inherit; font-size: 13px; font-weight: 700;
+          cursor: pointer; white-space: nowrap; text-decoration: none;
+          display: flex; align-items: center; gap: 5px;
+          box-shadow: 0 4px 16px rgba(108,99,255,.45);
+          transition: transform .15s, opacity .15s;
         }
-
-        .pwa-btn:active  { transform: scale(0.95); opacity: 0.85; }
-        .pwa-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
+        .pwa-btn:active { transform: scale(.95); opacity: .85; }
+        .pwa-btn:disabled { opacity:.6; cursor:not-allowed; }
         .pwa-close {
-          width: 28px; height: 28px;
-          background: rgba(255,255,255,0.07);
-          border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 50%;
-          color: rgba(255,255,255,0.45);
-          font-size: 15px;
-          cursor: pointer;
-          display: flex; align-items: center; justify-content: center;
-          flex-shrink: 0;
-          transition: background 0.15s;
+          width:28px; height:28px; border-radius:50%;
+          background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.1);
+          color:rgba(255,255,255,.4); font-size:14px; cursor:pointer;
+          display:flex; align-items:center; justify-content:center;
         }
-        .pwa-close:active { background: rgba(255,255,255,0.15); }
+
+        /* iOS steps bar */
+        .pwa-ios-bar {
+          background: rgba(108,99,255,.12);
+          border-top: 1px solid rgba(108,99,255,.2);
+          padding: 10px 16px;
+          display: flex; align-items: center; justify-content: center;
+          gap: 6px; font-size: 12px; color: rgba(200,185,255,.85);
+          flex-wrap: wrap; text-align: center;
+        }
+        .pwa-ios-bar strong { color: #c4b5fd; }
 
         .pwa-spin {
-          width: 14px; height: 14px;
-          border: 2px solid rgba(255,255,255,0.3);
-          border-top-color: #fff;
-          border-radius: 50%;
-          animation: spin 0.7s linear infinite;
+          width:13px; height:13px;
+          border:2px solid rgba(255,255,255,.3);
+          border-top-color:#fff; border-radius:50%;
+          animation: spin .7s linear infinite;
         }
-
-        .pwa-ios-hint {
-          background: rgba(108,99,255,0.1);
-          border-top: 1px solid rgba(108,99,255,0.2);
-          padding: 10px 18px;
-          font-size: 12px;
-          color: rgba(190,175,255,0.85);
-          text-align: center;
-        }
-
-        .pwa-ios-hint strong { color: #c4b5fd; }
-
         @keyframes pwa-up {
-          from { transform: translateY(100%); opacity: 0; }
-          to   { transform: translateY(0);    opacity: 1; }
+          from { transform:translateY(100%); opacity:0; }
+          to   { transform:translateY(0);    opacity:1; }
         }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes spin { to { transform:rotate(360deg); } }
       `}</style>
 
       <div className="pwa-wrap">
         <div className="pwa-bar">
-          <div className="pwa-app-icon">📚</div>
+          <div className="pwa-ico">📚</div>
 
-          <div className="pwa-info">
+          <div className="pwa-text">
             <p className="pwa-title">تطبيق إخلاص</p>
             <p className="pwa-sub">
-              {promptReady
-                ? '✅ جاهز للتثبيت الآن!'
-                : ios
-                  ? 'أضفه إلى الشاشة الرئيسية'
-                  : '⚠️ افتح بـ Chrome للتثبيت المباشر'}
+              {canInstallDirect && promptReady && 'جاهز للتثبيت — اضغط الزر الآن!'}
+              {canInstallDirect && !promptReady && 'انتظر لحظة...'}
+              {isOtherAndroid && 'سيفتح في Chrome للتثبيت المباشر'}
+              {isIOS && 'أضفه لشاشتك الرئيسية عبر Safari'}
             </p>
           </div>
 
-          <button
-            className="pwa-btn"
-            onClick={handleInstall}
-            disabled={isInstalling}
-          >
-            {isInstalling
-              ? <div className="pwa-spin" />
-              : promptReady
-                ? '⬇️ ثبّت'
-                : ios
-                  ? '📖 كيف؟'
-                  : '⬇️ ثبّت'}
-          </button>
+          <div className="pwa-actions">
+            {/* Android Chrome/Samsung — direct install */}
+            {canInstallDirect && (
+              <button
+                className="pwa-btn"
+                onClick={handleInstall}
+                disabled={isInstalling || !promptReady}
+              >
+                {isInstalling
+                  ? <div className="pwa-spin" />
+                  : <>⬇️ ثبّت</>}
+              </button>
+            )}
 
-          <button
-            className="pwa-close"
-            onClick={() => setVisible(false)}
-            aria-label="إغلاق"
-          >
-            ✕
-          </button>
+            {/* Android other browser — open in Chrome */}
+            {isOtherAndroid && (
+              <a
+                className="pwa-btn"
+                href={chromeUrl}
+                rel="noopener noreferrer"
+              >
+                🌐 افتح بـ Chrome
+              </a>
+            )}
+
+            {/* iOS Safari — scroll to instructions below */}
+            {isIOS && (
+              <button
+                className="pwa-btn"
+                onClick={() => {
+                  // iOS has no API, instructions shown below
+                }}
+                style={{ pointerEvents: 'none', opacity: 0.85 }}
+              >
+                👇 اتبع الخطوات
+              </button>
+            )}
+
+            <button className="pwa-close" onClick={() => setVisible(false)} aria-label="إغلاق">✕</button>
+          </div>
         </div>
 
-        {ios && (
-          <div className="pwa-ios-hint">
-            اضغط <strong>□↑ مشاركة</strong> ثم اختر <strong>"Add to Home Screen"</strong>
+        {/* iOS step-by-step always visible */}
+        {isIOS && (
+          <div className="pwa-ios-bar">
+            <span>١. اضغط</span>
+            <strong>□↑ مشاركة</strong>
+            <span>٢. اختر</span>
+            <strong>Add to Home Screen</strong>
+            <span>٣. اضغط</span>
+            <strong>Add ✓</strong>
           </div>
         )}
       </div>
